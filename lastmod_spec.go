@@ -1,0 +1,169 @@
+// Package lastmodstore provides a thread-safe in-memory key-value store
+// with per-item last-modified timestamp tracking and lifecycle management.
+//
+// PROJECT SPECIFICATION
+// =====================
+//
+// Component: LastModifiedStore
+//
+// Purpose:
+// A thread-safe, in-memory key-value store that tracks the last modification
+// time for each stored item. Supports basic CRUD operations with lifecycle
+// management and a worker pool pattern for background processing.
+//
+// Core Requirements:
+// -----------------
+// 1. Thread-safe operations using mutex synchronization
+// 2. Per-item last-modified timestamp tracking
+// 3. Lifecycle management (Start/Stop/IsRunning)
+// 4. Worker pool pattern for background operations
+// 5. Pure in-memory storage with no persistence
+//
+// Data Structures:
+// ---------------
+// type StoreItem struct {
+//     Value        interface{}
+//     LastModified time.Time
+// }
+//
+// type Config struct {
+//     MaxSize      int           // Maximum number of items (0 = unlimited)
+//     WorkerCount  int           // Number of background workers (default: 2)
+//     CleanupInterval time.Duration // Interval for cleanup operations (0 = disabled)
+// }
+//
+// type LastModifiedStore struct {
+//     mu           sync.RWMutex
+//     items        map[string]*StoreItem
+//     config       Config
+//     running      bool
+//     workers      *WorkerPool
+//     shutdownCh   chan struct{}
+//     ctx          context.Context
+//     cancel       context.CancelFunc
+// }
+//
+// Basic Operations:
+// ----------------
+// 1. Set(key string, value interface{}) error
+//    - Stores a value with current timestamp
+//    - Updates last-modified if key exists
+//    - Returns error if store is full (when MaxSize is set)
+//    - Returns error if not running
+//
+// 2. Get(key string) (*StoreItem, error)
+//    - Retrieves item with metadata
+//    - Returns error if key not found
+//    - Returns error if not running
+//
+// 3. Delete(key string) error
+//    - Removes item from store
+//    - Returns error if key not found
+//    - Returns error if not running
+//
+// 4. List() (map[string]*StoreItem, error)
+//    - Returns shallow copy of all items
+//    - Returns error if not running
+//
+// 5. Clear() error
+//    - Removes all items
+//    - Returns error if not running
+//
+// 6. Size() (int, error)
+//    - Returns current item count
+//    - Returns error if not running
+//
+// Lifecycle Operations:
+// --------------------
+// 1. NewLastModifiedStore(config Config) (*LastModifiedStore, error)
+//    - Validates configuration
+//    - Sets defaults (WorkerCount=2 if 0)
+//    - Does NOT start the store
+//    - Returns error for invalid config (e.g., negative values)
+//
+// 2. Start(ctx context.Context) error
+//    - Initializes internal context and channels
+//    - Starts worker pool
+//    - Starts cleanup goroutine if CleanupInterval > 0
+//    - Sets running state to true
+//    - Returns error if already running
+//    - Returns error if ctx is nil
+//
+// 3. IsRunning() bool
+//    - Thread-safe check of running state
+//    - No error return (always safe to call)
+//
+// 4. Shutdown() error
+//    - Graceful shutdown of workers and cleanup
+//    - Waits for in-flight operations
+//    - Cancels context
+//    - Closes channels
+//    - Sets running state to false
+//    - Returns error if not running
+//    - Idempotent (safe to call multiple times)
+//
+// Worker Pool Pattern:
+// -------------------
+// type WorkerPool struct {
+//     workers    []*Worker
+//     jobQueue   chan Job
+//     resultCh   chan JobResult
+//     wg         sync.WaitGroup
+//     ctx        context.Context
+// }
+//
+// type Job struct {
+//     ID        string
+//     Type      JobType
+//     Data      interface{}
+//     SubmittedAt time.Time
+// }
+//
+// type JobType int
+// const (
+//     JobTypeCleanup JobType = iota
+//     JobTypeValidation
+// )
+//
+// Worker Pool Operations:
+// - Submit(job Job) error - adds job to queue
+// - Stop() - graceful shutdown of all workers
+// - Start() - initializes and starts workers
+//
+// Background Processing:
+// ---------------------
+// 1. Cleanup Operations (if CleanupInterval > 0)
+//    - Periodic validation of store integrity
+//    - Logging of store statistics
+//    - Submitted as jobs to worker pool
+//
+// Error Handling:
+// --------------
+// Common errors:
+// - ErrNotRunning: Operation attempted when store not running
+// - ErrAlreadyRunning: Start called when already running
+// - ErrNotFound: Key not found in store
+// - ErrStoreFull: MaxSize reached, cannot add more items
+// - ErrInvalidConfig: Invalid configuration provided
+// - ErrNilContext: Nil context provided to Start
+//
+// Concurrency Guarantees:
+// ----------------------
+// - All operations are thread-safe
+// - RWMutex allows concurrent reads
+// - Writes are exclusive
+// - Shutdown waits for all workers to complete
+//
+// Testing Phases:
+// --------------
+// Phase 1: Constructor and configuration validation
+// Phase 2: Start/IsRunning/basic state management
+// Phase 3: Single operation success cases (Set, Get, Delete)
+// Phase 4: Error handling and edge cases
+// Phase 5: Concurrent operations
+// Phase 6: Size limits and capacity management
+// Phase 7: Worker pool integration
+// Advanced Suite: Cleanup operations, statistics, monitoring
+// Shutdown Suite: Graceful shutdown scenarios
+
+//package lastmodstore
