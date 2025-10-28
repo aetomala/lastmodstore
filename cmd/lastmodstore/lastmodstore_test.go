@@ -2,6 +2,7 @@ package lastmodstore_test
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -17,13 +18,13 @@ func TestLastModStore(t *testing.T) {
 
 var _ = Describe("LastModifiedStore", func() {
 	var (
-		store *LastModifiedStore
-		//ctx    context.Context
+		store  *LastModifiedStore
+		ctx    context.Context
 		cancel context.CancelFunc
 		config Config
 	)
 	BeforeEach(func() {
-		//ctx, cancel = context.WithCancel(context.Background())
+		ctx, cancel = context.WithCancel(context.Background())
 		config = Config{
 			MaxSize:         0,
 			WorkerCount:     2,
@@ -104,6 +105,79 @@ var _ = Describe("LastModifiedStore", func() {
 				Expect(err).NotTo(HaveOccurred())
 				Expect(store.IsRunning()).To(BeFalse())
 			})
+		})
+	})
+
+	// === PHASE 2: Core Initialization ===
+	Describe("Start", func() {
+		BeforeEach(func() {
+			var err error
+			store, err = NewLastModifiedStore(config)
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		Context("with valid context", func() {
+			It("should start successfully", func() {
+				err := store.Start(ctx)
+				Expect(err).ToNot(HaveOccurred())
+			})
+			It("should set running state to true", func() {
+				err := store.Start(ctx)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(store.IsRunning()).To(BeTrue())
+			})
+			It("should initilize worker pool", func() {
+				err := store.Start(ctx)
+				// Worker pool functionality will be tested in Phase 7
+				// For now, just verify Start succeeded and store is running
+				Expect(err).NotTo(HaveOccurred())
+				// Worker pool should be running
+			})
+		})
+
+		Context("when already running", func() {
+			It("should return error on a second start", func() {
+				err := store.Start(ctx)
+				Expect(err).NotTo(HaveOccurred())
+
+				err = store.Start(ctx)
+				Expect(err).To(HaveOccurred())
+				Expect(err).To(MatchError(ErrAlreadyRunning))
+			})
+		})
+	})
+
+	Describe("IsRunning", func() {
+		BeforeEach(func() {
+			var err error
+			store, err = NewLastModifiedStore(config)
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("should return false before start", func() {
+			Expect(store.IsRunning()).To(BeFalse())
+		})
+
+		It("should return true after start", func() {
+			err := store.Start(ctx)
+			Expect(err).NotTo(HaveOccurred())
+			Expect(store.IsRunning()).To(BeTrue())
+		})
+
+		It("should be thread-safe", func() {
+			err := store.Start(ctx)
+			Expect(err).NotTo(HaveOccurred())
+
+			var wg sync.WaitGroup
+
+			for i := 0; i < 100; i++ {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					_ = store.IsRunning()
+				}()
+			}
+			wg.Wait()
 		})
 	})
 })

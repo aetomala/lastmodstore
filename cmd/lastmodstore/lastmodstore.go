@@ -174,8 +174,15 @@ package lastmodstore
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
+)
+
+const (
+	StateStopped int32 = 0
+	StateStarted int32 = 1
 )
 
 type Config struct {
@@ -193,7 +200,10 @@ type LastModifiedStore struct {
 	mu      sync.RWMutex
 	items   map[string]*StoreItem
 	config  Config
-	running bool
+	state   int32 // 0 stopped 1 running
+	ctx     context.Context
+	cancel  context.CancelFunc
+	workers sync.WaitGroup
 }
 
 // Sentinel errors
@@ -219,16 +229,16 @@ func NewLastModifiedStore(config Config) (*LastModifiedStore, error) {
 	}
 
 	c := &LastModifiedStore{
-		items:   make(map[string]*StoreItem),
-		mu:      sync.RWMutex{},
-		config:  config,
-		running: false,
+		items:  make(map[string]*StoreItem),
+		mu:     sync.RWMutex{},
+		config: config,
+		state:  StateStopped,
 	}
 	return c, nil
 }
 
 func (c *LastModifiedStore) IsRunning() bool {
-	return c.running //TBD
+	return atomic.LoadInt32(&c.state) == StateStarted
 }
 
 func (c *LastModifiedStore) Shutdown() error {
@@ -238,9 +248,28 @@ func (c *LastModifiedStore) Shutdown() error {
 func (c *LastModifiedStore) Start(ctx context.Context) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	// Validate
 
-	if c.IsRunning() {
+	// Check context before starting
+	// TODO
+
+	if !atomic.CompareAndSwapInt32(&c.state, StateStopped, StateStarted) {
 		return ErrAlreadyRunning
 	}
+
+	// Create cancellable context from the passed context
+	c.ctx, c.cancel = context.WithCancel(ctx)
+
+	// Initialize channels here if not done in constructor
+
+	// Start workers
+	for i := 1; i <= c.config.WorkerCount; i++ {
+		c.workers.Add(1)
+		go func(count int) {
+			defer c.workers.Done()
+			fmt.Printf("Worker %d started", count)
+		}(i)
+	}
+
 	return nil
 }
