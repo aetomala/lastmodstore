@@ -213,7 +213,7 @@ var (
 	ErrNotFound       = errors.New("key not found")
 	ErrNotRunning     = errors.New("store not running")
 	ErrNilContext     = errors.New("context cannot be nil")
-	ErrStoreFull      = errors.New("store is full")
+	ErrStoreFull      = errors.New("store has reached maximum capacity")
 )
 
 func ConfigDefault() Config {
@@ -234,7 +234,6 @@ func NewLastModifiedStore(config Config) (*LastModifiedStore, error) {
 
 	c := &LastModifiedStore{
 		items:  make(map[string]*StoreItem),
-		mu:     sync.RWMutex{},
 		config: config,
 		state:  StateStopped,
 	}
@@ -246,7 +245,32 @@ func (c *LastModifiedStore) IsRunning() bool {
 }
 
 func (c *LastModifiedStore) Shutdown() error {
-	return nil //TBD
+	c.mu.Lock()
+
+	//Check if already running
+	if atomic.LoadInt32(&c.state) != StateStarted {
+		c.mu.Unlock()
+		return ErrNotRunning
+	}
+
+	//Set state to stopped
+	atomic.StoreInt32(&c.state, StateStopped)
+	c.mu.Unlock()
+
+	// Cancel context to stop all goroutines
+	if c.cancel != nil {
+		c.cancel()
+	}
+
+	// Close cleanup channel (if it exists)
+	if c.cleanupShutdown != nil {
+		close(c.cleanupShutdown)
+	}
+
+	// Wait for all workers and cleanup goroutine to finish
+	c.workers.Wait()
+
+	return nil
 }
 
 func (c *LastModifiedStore) Start(ctx context.Context) error {
@@ -259,11 +283,11 @@ func (c *LastModifiedStore) Start(ctx context.Context) error {
 	}
 
 	// Check context before starting
-	/*select {
+	select {
 	case <-ctx.Done():
 		return ctx.Err()
 	default:
-	}*/
+	}
 
 	if !atomic.CompareAndSwapInt32(&c.state, StateStopped, StateStarted) {
 		return ErrAlreadyRunning
@@ -280,6 +304,7 @@ func (c *LastModifiedStore) Start(ctx context.Context) error {
 	for i := 1; i <= c.config.WorkerCount; i++ {
 		c.workers.Add(1)
 		go func(count int) {
+			defer c.workers.Done()
 			select {
 			case <-c.ctx.Done():
 				return
@@ -335,13 +360,19 @@ func (c *LastModifiedStore) Set(key string, value interface{}) error {
 	if atomic.LoadInt32(&c.state) != StateStarted {
 		return ErrNotRunning
 	}
-	// check if the item exists to allow updating if at capacity
-	_, found := c.items[key]
 
-	if len(c.items) >= c.config.MaxSize && !found {
-		return ErrStoreFull
-	} else {
-		c.items[key] = &StoreItem{Value: value, LastModified: time.Now()}
+	// Check capacity for new keys only (if MaxSize is set)
+	if c.config.MaxSize > 0 { // ✅ Only check if MaxSize is configured
+		if _, exists := c.items[key]; !exists {
+			if len(c.items) >= c.config.MaxSize {
+				return ErrStoreFull
+			}
+		}
+	}
+
+	c.items[key] = &StoreItem{
+		Value:        value,
+		LastModified: time.Now(),
 	}
 
 	return nil
