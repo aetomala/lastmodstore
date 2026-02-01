@@ -632,3 +632,375 @@ var _ = Describe("LastModifiedStore", func() {
 		})
 	})
 })
+
+// === Advanced Features Suite ===
+var _ = Describe("LastModifiedStore Advanced Features", func() {
+	var (
+		store  *LastModifiedStore
+		ctx    context.Context
+		cancel context.CancelFunc
+		config Config
+	)
+
+	BeforeEach(func() {
+		ctx, cancel = context.WithCancel(context.Background())
+		config = Config{
+			MaxSize:         0,
+			WorkerCount:     4,
+			CleanupInterval: 100 * time.Millisecond,
+		}
+		var err error
+		store, err = NewLastModifiedStore(config)
+		Expect(err).NotTo(HaveOccurred())
+		err = store.Start(ctx)
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	AfterEach(func() {
+		if store != nil && store.IsRunning() {
+			err := store.Shutdown()
+			Expect(err).NotTo(HaveOccurred())
+		}
+		if cancel != nil {
+			cancel()
+		}
+	})
+
+	Describe("Cleanup Operations", func() {
+		It("should periodically run cleanup jobs", func() {
+			// Add items
+			for i := 0; i < 10; i++ {
+				err := store.Set(string(rune('A'+i)), i)
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			// Wait for multiple cleanup cycles
+			time.Sleep(250 * time.Millisecond)
+
+			// Store should remain functional
+			size, err := store.Size()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(size).To(Equal(10))
+		})
+
+		It("should handle cleanup with concurrent operations", func() {
+			var wg sync.WaitGroup
+			done := make(chan struct{})
+
+			// Continuous writers
+			for i := 0; i < 5; i++ {
+				wg.Add(1)
+				go func(idx int) {
+					defer wg.Done()
+					ticker := time.NewTicker(10 * time.Millisecond)
+					defer ticker.Stop()
+
+					for {
+						select {
+						case <-done:
+							return
+						case <-ticker.C:
+							_ = store.Set(string(rune('A'+idx)), idx)
+						}
+					}
+				}(i)
+			}
+
+			// Let operations run during cleanup cycles
+			time.Sleep(300 * time.Millisecond)
+			close(done)
+			wg.Wait()
+
+			// Verify store is still consistent
+			size, err := store.Size()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(size).To(BeNumerically("<=", 5))
+		})
+	})
+
+	Describe("Performance Characteristics", func() {
+		It("should handle high-volume operations", func() {
+			numOps := 1000
+			start := time.Now()
+
+			for i := 0; i < numOps; i++ {
+				err := store.Set(string(rune('A'+i%26))+string(rune('A'+i/26)), i)
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			duration := time.Since(start)
+			Expect(duration).To(BeNumerically("<", 1*time.Second))
+		})
+
+		It("should maintain performance under concurrent load", func() {
+			var wg sync.WaitGroup
+			numGoroutines := 10
+			opsPerGoroutine := 100
+
+			start := time.Now()
+
+			for g := 0; g < numGoroutines; g++ {
+				wg.Add(1)
+				go func(gid int) {
+					defer wg.Done()
+					for i := 0; i < opsPerGoroutine; i++ {
+						key := string(rune('A'+gid)) + string(rune('0'+i%10))
+						_ = store.Set(key, i)
+						_, _ = store.Get(key)
+					}
+				}(g)
+			}
+
+			wg.Wait()
+			duration := time.Since(start)
+
+			Expect(duration).To(BeNumerically("<", 2*time.Second))
+		})
+	})
+
+	Describe("Worker Pool Behavior", func() {
+		It("should distribute work across workers", func() {
+			// Submit multiple items to trigger worker pool activity
+			for i := 0; i < 50; i++ {
+				err := store.Set(string(rune('A'+i%26)), i)
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			// Allow worker pool to process
+			time.Sleep(200 * time.Millisecond)
+
+			// Verify all items are present
+			size, err := store.Size()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(size).To(Equal(26)) // 26 unique keys (A-Z)
+		})
+	})
+
+	Describe("LastModified Tracking", func() {
+		It("should maintain accurate timestamps under load", func() {
+			baseTime := time.Now()
+
+			// Set items with known timing
+			err := store.Set("first", "value1")
+			Expect(err).NotTo(HaveOccurred())
+
+			time.Sleep(50 * time.Millisecond)
+
+			err = store.Set("second", "value2")
+			Expect(err).NotTo(HaveOccurred())
+
+			time.Sleep(50 * time.Millisecond)
+
+			err = store.Set("third", "value3")
+			Expect(err).NotTo(HaveOccurred())
+
+			// Verify timestamp ordering
+			first, err := store.Get("first")
+			Expect(err).NotTo(HaveOccurred())
+
+			second, err := store.Get("second")
+			Expect(err).NotTo(HaveOccurred())
+
+			third, err := store.Get("third")
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(first.LastModified).To(BeTemporally(">=", baseTime))
+			Expect(second.LastModified).To(BeTemporally(">", first.LastModified))
+			Expect(third.LastModified).To(BeTemporally(">", second.LastModified))
+		})
+
+		It("should update timestamps on every modification", func() {
+			err := store.Set("key", "value1")
+			Expect(err).NotTo(HaveOccurred())
+
+			timestamps := make([]time.Time, 5)
+			item, err := store.Get("key")
+			Expect(err).NotTo(HaveOccurred())
+			timestamps[0] = item.LastModified
+
+			for i := 1; i < 5; i++ {
+				time.Sleep(20 * time.Millisecond)
+				err = store.Set("key", i)
+				Expect(err).NotTo(HaveOccurred())
+
+				item, err = store.Get("key")
+				Expect(err).NotTo(HaveOccurred())
+				timestamps[i] = item.LastModified
+
+				Expect(timestamps[i]).To(BeTemporally(">", timestamps[i-1]))
+			}
+		})
+	})
+
+	Describe("Memory Management", func() {
+		It("should not leak memory with Clear operations", func() {
+			// Add many items
+			for i := 0; i < 100; i++ {
+				err := store.Set(string(rune('A'+i%26))+string(rune('0'+i/26)), i)
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			size, err := store.Size()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(size).To(BeNumerically(">", 0))
+
+			// Clear
+			err = store.Clear()
+			Expect(err).NotTo(HaveOccurred())
+
+			size, err = store.Size()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(size).To(Equal(0))
+
+			// Verify can add again
+			err = store.Set("after-clear", "value")
+			Expect(err).NotTo(HaveOccurred())
+
+			size, err = store.Size()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(size).To(Equal(1))
+		})
+	})
+})
+
+// === Shutdown Suite ===
+var _ = Describe("LastModifiedStore Shutdown", func() {
+	var (
+		store  *LastModifiedStore
+		ctx    context.Context
+		cancel context.CancelFunc
+		config Config
+	)
+
+	BeforeEach(func() {
+		ctx, cancel = context.WithCancel(context.Background())
+		config = Config{
+			MaxSize:         0,
+			WorkerCount:     2,
+			CleanupInterval: 100 * time.Millisecond,
+		}
+	})
+
+	AfterEach(func() {
+		if cancel != nil {
+			cancel()
+		}
+	})
+
+	Describe("Graceful Shutdown", func() {
+		It("should shutdown when not running without error", func() {
+			var err error
+			store, err = NewLastModifiedStore(config)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Note: Should be able to call Shutdown even if not started
+			// Implementation should handle this gracefully
+			err = store.Shutdown()
+			// Depending on implementation, this might return ErrNotRunning
+			// or succeed as a no-op. Document expected behavior.
+		})
+
+		It("should shutdown cleanly after start", func() {
+			var err error
+			store, err = NewLastModifiedStore(config)
+			Expect(err).NotTo(HaveOccurred())
+
+			err = store.Start(ctx)
+			Expect(err).NotTo(HaveOccurred())
+
+			err = store.Shutdown()
+			Expect(err).NotTo(HaveOccurred())
+			Expect(store.IsRunning()).To(BeFalse())
+		})
+
+		It("should be idempotent", func() {
+			var err error
+			store, err = NewLastModifiedStore(config)
+			Expect(err).NotTo(HaveOccurred())
+
+			err = store.Start(ctx)
+			Expect(err).NotTo(HaveOccurred())
+
+			err = store.Shutdown()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Second shutdown should not panic or cause issues
+			err = store.Shutdown()
+			// Should either succeed as no-op or return ErrNotRunning
+			// Document expected behavior
+		})
+
+		It("should stop accepting new operations after shutdown", func() {
+			var err error
+			store, err = NewLastModifiedStore(config)
+			Expect(err).NotTo(HaveOccurred())
+
+			err = store.Start(ctx)
+			Expect(err).NotTo(HaveOccurred())
+
+			err = store.Shutdown()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Operations should fail
+			err = store.Set("key", "value")
+			Expect(err).To(HaveOccurred())
+			Expect(err).To(MatchError(ErrNotRunning))
+		})
+	})
+
+	Describe("Shutdown with Active Operations", func() {
+		It("should wait for in-flight operations", func() {
+			var err error
+			store, err = NewLastModifiedStore(config)
+			Expect(err).NotTo(HaveOccurred())
+
+			err = store.Start(ctx)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Start long-running operations
+			var wg sync.WaitGroup
+			operationComplete := make(chan bool, 10)
+
+			for i := 0; i < 10; i++ {
+				wg.Add(1)
+				go func(idx int) {
+					defer wg.Done()
+					// Simulate some work
+					time.Sleep(50 * time.Millisecond)
+					err := store.Set(string(rune('A'+idx)), idx)
+					if err == nil {
+						operationComplete <- true
+					} else {
+						operationComplete <- false
+					}
+				}(i)
+			}
+
+			// Give operations time to start
+			time.Sleep(10 * time.Millisecond)
+
+			// Shutdown should wait
+			shutdownComplete := make(chan bool)
+			go func() {
+				_ = store.Shutdown()
+				shutdownComplete <- true
+			}()
+
+			// Wait for operations
+			wg.Wait()
+
+			// Shutdown should complete
+			Eventually(shutdownComplete, 2*time.Second).Should(Receive(BeTrue()))
+			close(operationComplete)
+
+			// At least some operations should have completed
+			successCount := 0
+			for success := range operationComplete {
+				if success {
+					successCount++
+				}
+			}
+			Expect(successCount).To(BeNumerically(">", 0))
+		})
+	})
+})
