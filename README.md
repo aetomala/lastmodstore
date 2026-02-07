@@ -1,5 +1,10 @@
 # lastmodstore
 
+![Tests](https://github.com/aetomala/lastmodstore/actions/workflows/test.yml/badge.svg?branch=main)
+![Go Version](https://img.shields.io/badge/go-1.21+-blue.svg)
+![License](https://img.shields.io/badge/license-MIT-green.svg)
+
+
 **Thread-safe TTL cache with timestamp tracking - exploring Go concurrency patterns for distributed system state management**
 
 ## Purpose
