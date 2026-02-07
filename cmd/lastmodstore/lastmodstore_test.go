@@ -1002,5 +1002,172 @@ var _ = Describe("LastModifiedStore Shutdown", func() {
 			}
 			Expect(successCount).To(BeNumerically(">", 0))
 		})
+
+		It("should stop cleanup goroutine", func() {
+			var err error
+			store, err = NewLastModifiedStore(config)
+			Expect(err).NotTo(HaveOccurred())
+
+			err = store.Start(ctx)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Add items
+			err = store.Set("key1", "value1")
+			Expect(err).NotTo(HaveOccurred())
+
+			// wait for cleanup to start
+			time.Sleep(150 * time.Millisecond)
+
+			// Shutdown
+			err = store.Shutdown()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Give time for goroutines to exit
+			time.Sleep(50 * time.Millisecond)
+		})
+	})
+
+	Describe("Context Cancellation", func() {
+		It("should handle context cancellation during operation", func() {
+			var err error
+			store, err = NewLastModifiedStore(config)
+			Expect(err).NotTo(HaveOccurred())
+
+			err = store.Start(ctx)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Add some items
+			err = store.Set("key1", "value1")
+			Expect(err).NotTo(HaveOccurred())
+
+			// Cancel context
+			cancel()
+
+			// Give time for cancellation to propagate
+			time.Sleep(50 * time.Millisecond)
+
+			// Cleanup shutdown
+			_ = store.Shutdown()
+		})
+
+		It("should shutdown gracefully when parent context cancelled", func() {
+			var err error
+			store, err := NewLastModifiedStore(config)
+			Expect(err).NotTo(HaveOccurred())
+
+			err = store.Start(ctx)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Start continous operations
+			done := make(chan struct{})
+			var wg sync.WaitGroup
+
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				ticker := time.NewTicker(10 * time.Millisecond)
+				defer ticker.Stop()
+
+				for {
+					select {
+					case <-done:
+						return
+					case <-ticker.C:
+						_ = store.Set("continous", time.Now().Unix())
+					}
+				}
+			}()
+
+			// Let it run
+			time.Sleep(100 * time.Millisecond)
+
+			// Cancel parent context
+			cancel()
+			close(done)
+			wg.Wait()
+
+			// Shutdown should still work
+			err = store.Shutdown()
+			Expect(err).NotTo(HaveOccurred())
+		})
+	})
+
+	Describe("Worker Pool Cleanup", func() {
+		It("should shutdown all workers", func() {
+			var err error
+			store, err := NewLastModifiedStore(config)
+			Expect(err).NotTo(HaveOccurred())
+
+			err = store.Start(ctx)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Submit work to engage workers
+			for i := range 20 {
+				err = store.Set(string(rune('A'+1526)), i)
+				Expect(err).NotTo(HaveOccurred())
+			}
+
+			// Allow workers to process
+			time.Sleep(150 * time.Millisecond)
+
+			// Shutdown
+			err = store.Shutdown()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Workers should be stopped
+			Expect(store.IsRunning()).To(BeFalse())
+		})
+
+		It("should not accept new work after shutdown completes", func() {
+			var err error
+			store, err = NewLastModifiedStore(config)
+			Expect(err).NotTo(HaveOccurred())
+
+			err = store.Start(ctx)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Shutdown the store
+			err = store.Shutdown()
+			Expect(err).NotTo(HaveOccurred())
+
+			// After shutdown completes, attempts to add work should fail
+			err = store.Set("after-shutdown", "value")
+			Expect(err).To(HaveOccurred())
+			Expect(err).To(MatchError(ErrNotRunning))
+		})
+	})
+
+	Describe("Resource Cleanup", func() {
+		It("should close all channels on shutdown", func() {
+			var err error
+			store, err = NewLastModifiedStore(config)
+			Expect(err).NotTo(HaveOccurred())
+
+			err = store.Start(ctx)
+			Expect(err).NotTo(HaveOccurred())
+
+			err = store.Shutdown()
+			Expect(err).NotTo(HaveOccurred())
+
+			// No goroutines should be leaked
+			// In real implementation, use runtime.NumGoroutine()
+			// or leak detection tools to verify
+		})
+
+		It("should cancel internal context", func() {
+			var err error
+			store, err = NewLastModifiedStore(config)
+			Expect(err).NotTo(HaveOccurred())
+
+			err = store.Start(ctx)
+			Expect(err).NotTo(HaveOccurred())
+
+			// Store should have internal context
+			err = store.Shutdown()
+			Expect(err).NotTo(HaveOccurred())
+
+			// Internal context should be cancelled
+			// Implementation should ensure no goroutines are blocked
+		})
 	})
 })

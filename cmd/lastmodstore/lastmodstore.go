@@ -202,7 +202,7 @@ type LastModifiedStore struct {
 	state           int32 // 0 stopped 1 running
 	ctx             context.Context
 	cancel          context.CancelFunc
-	workers         sync.WaitGroup
+	workers         *sync.WaitGroup
 	cleanupShutdown chan struct{} // Signal cleanup goroutine to stop
 }
 
@@ -233,9 +233,10 @@ func NewLastModifiedStore(config Config) (*LastModifiedStore, error) {
 	}
 
 	c := &LastModifiedStore{
-		items:  make(map[string]*StoreItem),
-		config: config,
-		state:  StateStopped,
+		items:   make(map[string]*StoreItem),
+		config:  config,
+		state:   StateStopped,
+		workers: &sync.WaitGroup{},
 	}
 	return c, nil
 }
@@ -253,10 +254,6 @@ func (c *LastModifiedStore) Shutdown() error {
 		return ErrNotRunning
 	}
 
-	//Set state to stopped
-	atomic.StoreInt32(&c.state, StateStopped)
-	c.mu.Unlock()
-
 	// Cancel context to stop all goroutines
 	if c.cancel != nil {
 		c.cancel()
@@ -267,8 +264,15 @@ func (c *LastModifiedStore) Shutdown() error {
 		close(c.cleanupShutdown)
 	}
 
+	c.mu.Unlock() // Unlock BEFORE waiting to allow in-flight operations to complete
+
 	// Wait for all workers and cleanup goroutine to finish
 	c.workers.Wait()
+
+	// Set state to stopped after all operations are done
+	c.mu.Lock()
+	atomic.StoreInt32(&c.state, StateStopped)
+	c.mu.Unlock()
 
 	return nil
 }
@@ -375,6 +379,10 @@ func (c *LastModifiedStore) Set(key string, value interface{}) error {
 		return ErrNotRunning
 	}
 
+	// Add to wg
+	c.workers.Add(1)
+	defer c.workers.Done()
+
 	// Check capacity for new keys only (if MaxSize is set)
 	if c.config.MaxSize > 0 { // ✅ Only check if MaxSize is configured
 		if _, exists := c.items[key]; !exists {
@@ -401,6 +409,10 @@ func (c *LastModifiedStore) Get(key string) (*StoreItem, error) {
 		return nil, ErrNotRunning
 	}
 
+	// Add to wg
+	c.workers.Add(1)
+	defer c.workers.Done()
+
 	value, ok := c.items[key]
 
 	if !ok {
@@ -417,6 +429,10 @@ func (c *LastModifiedStore) Delete(key string) error {
 	if atomic.LoadInt32(&c.state) != StateStarted {
 		return ErrNotRunning
 	}
+
+	// Add to wg
+	c.workers.Add(1)
+	defer c.workers.Done()
 
 	// Check if key exists directly - don't call Get()
 	if _, exists := c.items[key]; !exists {
@@ -436,6 +452,10 @@ func (c *LastModifiedStore) Size() (int, error) {
 		return 0, ErrNotRunning
 	}
 
+	// Add to wg
+	c.workers.Add(1)
+	defer c.workers.Done()
+
 	return len(c.items), nil
 }
 
@@ -447,6 +467,10 @@ func (c *LastModifiedStore) List() (map[string]*StoreItem, error) {
 	if atomic.LoadInt32(&c.state) != StateStarted {
 		return nil, ErrNotRunning
 	}
+
+	// Add to wg
+	c.workers.Add(1)
+	defer c.workers.Done()
 
 	// Create a new map with the same capacity
 	result := make(map[string]*StoreItem, len(c.items))
@@ -466,6 +490,11 @@ func (c *LastModifiedStore) Clear() error {
 	if atomic.LoadInt32(&c.state) != StateStarted {
 		return ErrNotRunning
 	}
+
+	// Add to wg
+	c.workers.Add(1)
+	defer c.workers.Done()
+
 	clear(c.items)
 	return nil
 }
