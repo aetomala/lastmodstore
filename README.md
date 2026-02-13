@@ -407,10 +407,6 @@ Senior Platform Engineer (28 years) maintaining Go fundamentals between infrastr
 
 **Why share practice code?** Because seeing how senior engineers approach continuous learning matters. Not everything needs to be a finished product - sometimes exploring the fundamentals is the point.
 
-## Development Notes
-
-Built using AI-assisted pair programming (Claude) to explore modern development workflows while maintaining rigorous TDD practices and deep technical fundamentals.
-
 ## License
 
 MIT
