@@ -5,7 +5,7 @@
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 
 
-**Thread-safe TTL cache with timestamp tracking - exploring Go concurrency patterns for distributed system state management**
+**Thread-safe key-value store with last-modified timestamp tracking - exploring Go concurrency patterns for distributed system state management**
 
 ## Purpose
 
